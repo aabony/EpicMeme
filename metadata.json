@@ -1,0 +1,7 @@
+{
+  "name": "EpicMeme - AI Movie Poster Generator",
+  "description": "Transform your selfies into epic movie posters using AI inpainting and cinematic styling.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

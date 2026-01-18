@@ -1,0 +1,8 @@
+
+fastapi
+uvicorn
+python-multipart
+google-cloud-storage
+google-cloud-vision
+google-cloud-aiplatform
+Pillow
