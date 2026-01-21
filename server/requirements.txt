@@ -1,8 +1,9 @@
 
-fastapi
-uvicorn
-python-multipart
-google-cloud-storage
-google-cloud-vision
-google-cloud-aiplatform
-Pillow
+fastapi==0.109.2
+uvicorn==0.27.1
+python-multipart==0.0.9
+google-cloud-storage==2.14.0
+google-cloud-vision==3.7.1
+google-cloud-aiplatform==1.42.1
+Pillow==10.2.0
+requests==2.31.0

@@ -15,62 +15,84 @@ const ResultDisplay: React.FC<ResultDisplayProps> = ({ imageUrl, onReset }) => {
   };
 
   const handleShare = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'Check out my Epic Meme Poster!',
-          text: 'Generated with AI on EpicMeme',
-          url: window.location.href
-        });
-      } catch (e) {
-        console.error("Sharing failed", e);
+    if (!navigator.share) {
+      alert("Sharing is not supported on this browser. Please download the image instead.");
+      return;
+    }
+
+    try {
+      // 1. Attempt to share the Image File directly (Best UX)
+      const response = await fetch(imageUrl, { referrerPolicy: 'no-referrer' });
+      const blob = await response.blob();
+      const file = new File([blob], 'epic-meme-poster.png', { type: 'image/png' });
+
+      const shareData = {
+        files: [file],
+        title: 'EpicMeme Poster',
+        text: 'Check out my AI-generated movie poster!',
+      };
+
+      if (navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+        return;
+      }
+
+      // 2. Fallback to URL sharing if files aren't supported
+      let urlToShare = window.location.href;
+      if (!urlToShare.startsWith('http')) {
+        urlToShare = 'https://epicmeme.ai'; 
+      }
+
+      await navigator.share({
+        title: 'EpicMeme - AI Movie Poster Generator',
+        text: 'Transform your selfies into epic movie posters.',
+        url: urlToShare
+      });
+
+    } catch (e) {
+      console.warn("Sharing failed", e);
+      if ((e as Error).name !== 'AbortError') {
+         alert("Could not share. Try downloading the image instead.");
       }
     }
   };
 
   return (
-    <div className="max-w-4xl mx-auto flex flex-col md:flex-row gap-12 items-center py-10">
-      <div className="flex-1 w-full max-w-sm">
+    <div className="max-w-4xl mx-auto flex flex-col items-center py-10">
+      <div className="w-full max-w-md mb-8">
         <div className="relative rounded-3xl overflow-hidden shadow-[0_0_50px_rgba(255,255,255,0.1)] group">
-          <img src={imageUrl} className="w-full h-auto" alt="Generated Poster" />
+          <img 
+            src={imageUrl} 
+            className="w-full h-auto" 
+            alt="Generated Poster" 
+            referrerPolicy="no-referrer"
+          />
           <div className="absolute inset-0 bg-yellow-500/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
         </div>
       </div>
       
-      <div className="flex-1 space-y-8 text-center md:text-left">
-        <div className="space-y-4">
-          <h2 className="text-5xl font-oswald font-bold uppercase tracking-tighter">You Look <span className="text-yellow-500">Incredible</span></h2>
-          <p className="text-lg text-white/60">The AI has analyzed your features and blended them perfectly into the movie poster's world. This is a true cinematic artifact.</p>
-        </div>
-
-        <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 w-full max-w-sm">
           <button 
             onClick={handleDownload}
-            className="w-full bg-white text-black py-4 rounded-xl font-bold text-xl hover:bg-yellow-500 transition-all flex items-center justify-center gap-3"
+            className="w-full bg-yellow-500 text-black py-4 rounded-xl font-black text-xl hover:bg-white transition-all flex items-center justify-center gap-3 uppercase tracking-wider"
           >
-            DOWNLOAD POSTER
+            DOWNLOAD POSTER ⬇
           </button>
           
           <div className="flex gap-4">
             <button 
               onClick={handleShare}
-              className="flex-1 bg-white/10 border border-white/20 text-white py-4 rounded-xl font-bold hover:bg-white/20 transition-all"
+              className="flex-1 bg-white/10 border border-white/20 text-white py-4 rounded-xl font-bold hover:bg-white/20 transition-all uppercase tracking-wider"
             >
               SHARE
             </button>
             <button 
               onClick={onReset}
-              className="flex-1 bg-white/10 border border-white/20 text-white py-4 rounded-xl font-bold hover:bg-white/20 transition-all"
+              className="flex-1 bg-white/10 border border-white/20 text-white py-4 rounded-xl font-bold hover:bg-white/20 transition-all uppercase tracking-wider"
             >
               CREATE NEW
             </button>
           </div>
-        </div>
-
-        <div className="p-6 bg-yellow-500/10 border border-yellow-500/20 rounded-2xl">
-          <p className="text-sm font-bold text-yellow-500 uppercase tracking-widest mb-1">PRO TIP</p>
-          <p className="text-sm text-white/80">Try different templates for unique color grades and lighting effects. The "Shadow Dweller" is great for dramatic lighting!</p>
-        </div>
       </div>
     </div>
   );

@@ -18,9 +18,8 @@ const Header: React.FC = () => {
           <a href="#" className="hover:text-white transition-colors">Showcase</a>
           <a href="#" className="hover:text-white transition-colors text-white">Generator</a>
         </nav>
-        <button className="bg-white text-black px-4 py-2 rounded-full text-sm font-bold hover:bg-yellow-500 transition-all">
-          SIGN IN
-        </button>
+        {/* Sign In button removed as requested */}
+        <div className="w-10"></div> 
       </div>
     </header>
   );

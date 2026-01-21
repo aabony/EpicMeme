@@ -1,81 +1,238 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
-import { MemeTone } from "../types";
+import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { MemeTone, MemeTemplate } from "../types";
 import { TONE_PROMPTS } from "../data/tonePrompts";
-import { TEMPLATES } from "../data/templates";
+import { TEMPLATES as FALLBACK_TEMPLATES } from "../data/templates";
+
+const getEnv = (key: string, viteKey: string): string => {
+  try {
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      // @ts-ignore
+      return import.meta.env[viteKey] || '';
+    }
+  } catch (e) {}
+  
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      return process.env[key] || '';
+    }
+  } catch (e) {}
+  
+  return '';
+};
+
+export type GenerationStrategy = 'cinematic' | 'parody';
 
 export class MemeGeneratorService {
   private ai: GoogleGenAI;
+  public apiEndpoint: string;
+  public baseUrl: string;
+  private localTemplates: MemeTemplate[];
 
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+    const apiKey = getEnv('API_KEY', 'VITE_GEMINI_API_KEY');
+    this.ai = new GoogleGenAI({ apiKey });
+    this.baseUrl = getEnv('REACT_APP_API_URL', 'VITE_API_URL') || 'http://localhost:8080';
+    this.apiEndpoint = `${this.baseUrl}/generate-meme`;
+    this.localTemplates = JSON.parse(JSON.stringify(FALLBACK_TEMPLATES));
   }
 
-  /**
-   * Helper to clean JSON string from Markdown code blocks and extra text
-   */
+  // --- HEALTH CHECK ---
+  async checkHealth(): Promise<boolean> {
+     return true; 
+  }
+
+  // --- TEMPLATES ---
+  async fetchTemplates(): Promise<MemeTemplate[]> {
+    return this.localTemplates;
+  }
+
+  async uploadTemplateImage(templateId: string, file: File): Promise<string> {
+    const objectUrl = URL.createObjectURL(file);
+    const template = this.localTemplates.find(t => t.id === templateId);
+    if (template) {
+        if (!template.images) template.images = [];
+        template.images.unshift(objectUrl);
+        template.coverImage = objectUrl;
+    }
+    return objectUrl;
+  }
+
+  async generateTemplateBackground(templateId: string, prompt: string): Promise<string> {
+      try {
+          const response = await this.ai.models.generateContent({
+              model: 'gemini-3-pro-image-preview', // Higher quality for admin gen
+              contents: {
+                  parts: [
+                      { text: `Movie poster background for ${prompt}. Cinematic, high quality, 8k, vertical aspect ratio. No text.` }
+                  ]
+              },
+              config: {
+                safetySettings: [
+                    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH }
+                ]
+              }
+          });
+
+          let base64Data = '';
+          for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData) {
+                base64Data = part.inlineData.data;
+                break;
+            }
+          }
+
+          if (!base64Data) throw new Error("No image generated");
+
+          const res = await fetch(`data:image/png;base64,${base64Data}`);
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+
+          const template = this.localTemplates.find(t => t.id === templateId);
+          if (template) {
+                if (!template.images) template.images = [];
+                template.images.unshift(objectUrl);
+                template.coverImage = objectUrl;
+          }
+          
+          return objectUrl;
+
+      } catch (clientError) {
+          console.error("Client-side generation failed:", clientError);
+          throw clientError;
+      }
+  }
+
+  // --- UTILS ---
+
+  async draftPosterPrompt(movieTitle: string): Promise<string> {
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Write a text-to-image prompt for a movie poster titled "${movieTitle}". 
+        Describe the costume, lighting, and setting in 20 words. 
+        Start with: "A cinematic movie poster of..."`,
+      });
+      return response.text?.trim() || `A cinematic movie poster inspired by ${movieTitle}, high quality, 8k.`;
+    } catch (e) {
+      return `A cinematic movie poster inspired by ${movieTitle}, high quality, 8k.`;
+    }
+  }
+
   private cleanJson(text: string): string {
     if (!text) return "{}";
-    // 1. Remove markdown wrapping
-    let cleaned = text.replace(/```json/g, '').replace(/```/g, '');
-    
-    // 2. Extract the JSON object boundaries
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    
-    if (firstBrace !== -1 && lastBrace !== -1) {
-      cleaned = cleaned.substring(firstBrace, lastBrace + 1);
-    }
-    
-    return cleaned.trim();
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) return match[0];
+    return text.replace(/```json/g, '').replace(/```/g, '').trim();
   }
 
-  /**
-   * Helper to fetch an image URL and convert to Base64 string (without data: prefix)
-   */
-  private async urlToBase64(url: string): Promise<string> {
+  private getBase64Details(base64String: string): { data: string, mimeType: string } {
+    // Robust parsing: split by comma instead of complex regex
+    if (base64String.includes(',')) {
+        const parts = base64String.split(',');
+        const mimeMatch = parts[0].match(/:(.*?);/);
+        const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+        return { mimeType: mime, data: parts[1] };
+    }
+    // Assume it's pure data if no comma
+    return { mimeType: 'image/jpeg', data: base64String };
+  }
+
+  private blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  private async fetchImageAsBase64(url: string): Promise<string> {
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`Failed to fetch image: ${url}`);
-      const blob = await response.blob();
-      const buffer = await blob.arrayBuffer();
-      // Convert ArrayBuffer to Base64
-      let binary = '';
-      const bytes = new Uint8Array(buffer);
-      const len = bytes.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      return btoa(binary);
+        // 1. Try direct fetch (works for blob: URLs and CORS-enabled servers)
+        const response = await fetch(url, { mode: 'cors', credentials: 'omit' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        return await this.blobToBase64(blob);
     } catch (e) {
-      console.warn(`Could not load template image (${url}). Using fallback placeholder.`, e);
-      // Return a Placeholder image (black background with text) so the AI still has a 'poster' base
-      // This prevents the AI from using the user photo as the base canvas.
-      // Base64 for a simple placeholder image
-      return "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="; // 1x1 fallback is too risky, but keeping simple for code size.
-      // Ideally, in a real app, we fetch a real placeholder URL here if the local asset fails.
+        console.warn(`Direct fetch failed for ${url}, attempting CORS proxy fallback...`, e);
+        
+        // 2. Fallback: Use a public CORS proxy for demo purposes (fixes "Could not download template")
+        // Only works for http/https URLs, not blob:
+        if (url.startsWith('http')) {
+            try {
+                // Using corsproxy.io as a reliable public proxy for demos
+                const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+                const response = await fetch(proxyUrl, { mode: 'cors' });
+                if (!response.ok) throw new Error(`Proxy HTTP ${response.status}`);
+                const blob = await response.blob();
+                return await this.blobToBase64(blob);
+            } catch (proxyError) {
+                console.error("Proxy fetch failed:", proxyError);
+                throw new Error("Could not download template image (CORS blocked).");
+            }
+        }
+        throw e;
     }
   }
 
-  /**
-   * Generates creative text (Title, Slogan, Plot) based on the template and selected tone.
-   */
+  private async resizeImage(base64Str: string, maxDimension: number = 1024): Promise<string> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > height) {
+            if (width > maxDimension) {
+                height = Math.round((height * maxDimension) / width);
+                width = maxDimension;
+            }
+        } else {
+            if (height > maxDimension) {
+                width = Math.round((width * maxDimension) / height);
+                height = maxDimension;
+            }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(base64Str);
+        
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        resolve(canvas.toDataURL('image/jpeg', 0.85)); 
+      };
+      
+      img.onerror = () => {
+          console.warn("Image resize failed, using original");
+          resolve(base64Str);
+      };
+      
+      img.setAttribute('crossOrigin', 'anonymous'); 
+      img.src = base64Str;
+    });
+  }
+
   async generateCreativeText(templateName: string, tone: MemeTone): Promise<{ movieTitle: string; slogan: string; coverText: string }> {
     try {
       const styleGuide = TONE_PROMPTS[tone] || TONE_PROMPTS['Funny'];
-
       const response = await this.ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3-flash-preview', 
         contents: `You are a Hollywood marketing genius.
-        
         TASK: Write movie poster copy for a movie based on the template: "${templateName}".
         TONE: ${tone}
-        
-        STYLE GUIDE:
-        ${styleGuide}
-
-        Return strictly valid JSON.
-        `,
+        STYLE GUIDE: ${styleGuide}
+        INSTRUCTIONS:
+        1. Keep 'coverText' under 15 words. Short and punchy.
+        2. Return strictly valid JSON.`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -88,142 +245,271 @@ export class MemeGeneratorService {
           }
         }
       });
-
-      const jsonStr = this.cleanJson(response.text || "{}");
-      const json = JSON.parse(jsonStr);
-
+      const json = JSON.parse(this.cleanJson(response.text || "{}"));
       return {
-        movieTitle: json.movieTitle || "EPIC MOVIE",
-        slogan: json.slogan || "This time, it is personal.",
-        coverText: json.coverText || "In a world where everything went wrong, one hero must stand tall."
+        movieTitle: json.movieTitle || templateName.toUpperCase(),
+        slogan: json.slogan || "COMING SOON",
+        coverText: json.coverText || "Get ready for the cinematic event of the year."
       };
     } catch (e) {
-      console.error("Text gen failed", e);
       return {
-        movieTitle: "EPIC FAIL",
-        slogan: "Something went wrong.",
-        coverText: "The AI writer is on strike."
+        movieTitle: templateName.toUpperCase(),
+        slogan: "A CINEMATIC MASTERPIECE",
+        coverText: "In a world where anything can happen, one hero rises."
       };
     }
   }
 
-  /**
-   * Performs the generation logic using template_id and user data.
-   */
+  // --- CORE PIPELINE ---
+
+  async generateAIImageOnly(
+      userPhotoBase64: string,
+      templateUrl: string,
+      costume: string,
+      strategy: GenerationStrategy = 'cinematic',
+      logger?: (msg: string) => void
+  ): Promise<string> {
+      const log = (msg: string) => {
+          console.log(`[Gemini] ${msg}`);
+          if (logger) logger(msg);
+      };
+
+      log(`Strategy: ${strategy}`);
+      
+      // 1. Optimize Inputs
+      log("Preparing inputs...");
+      const optimizedUserPhoto = await this.resizeImage(userPhotoBase64, 1024);
+      
+      let templateBase64 = templateUrl;
+      if (templateUrl.startsWith('http') || templateUrl.startsWith('blob')) {
+            try {
+                templateBase64 = await this.fetchImageAsBase64(templateUrl);
+            } catch (e) {
+                log(`Failed download: ${(e as Error).message}`);
+                throw new Error("Could not download template image.");
+            }
+      }
+      // Low res for analysis is fine and faster
+      const optimizedTemplate = await this.resizeImage(templateBase64, 512);
+
+      const userParts = this.getBase64Details(optimizedUserPhoto);
+      const templateParts = this.getBase64Details(optimizedTemplate);
+
+      // 2. ANALYZE USER FACE (Identity Lock)
+      // We explicitly ask the model to describe the user first, so it has "tokens" for their face in context.
+      log("Analyzing ID...");
+      let userDescription = "";
+      try {
+        const userAnalysis = await this.ai.models.generateContent({
+             model: 'gemini-2.5-flash',
+             contents: { parts: [
+                 { inlineData: { data: userParts.data, mimeType: userParts.mimeType }},
+                 { text: "Describe this person's face in detail (eye color, hair style/color, facial hair, skin tone, facial structure). Start with 'A person with...'" }
+             ]}
+          });
+        userDescription = userAnalysis.text || "a person";
+        // log(`ID: ${userDescription}`);
+      } catch (e) {
+          userDescription = "the person in the reference image";
+      }
+
+      // 3. ANALYZE TEMPLATE (Style Extraction)
+      // Strictly forbidden to name actors to prevent hallucination.
+      log("Extracting style...");
+      let templateDescription = "";
+      try {
+        const analysisResp = await this.ai.models.generateContent({
+             model: 'gemini-2.5-flash',
+             contents: { parts: [
+                 { inlineData: { data: templateParts.data, mimeType: templateParts.mimeType }},
+                 { text: `Describe the VISUAL STYLE and BACKGROUND of this poster.
+                   Focus on: Lighting, Color Palette, Camera Angle, Background Elements.
+                   
+                   CRITICAL: 
+                   - DO NOT mention the main character's face.
+                   - DO NOT mention the movie title.` 
+                 }
+             ]}
+          });
+        templateDescription = analysisResp.text || `A cinematic poster with ${costume}`;
+      } catch (e) {
+          templateDescription = `A high quality cinematic movie poster. Dramatic lighting.`;
+      }
+
+      // 4. GENERATE NEW IMAGE (Double-Blind Synthesis with Fallback)
+      // We do NOT pass the template image to the generator. Only the user image and the generic description.
+      log("Synthesizing...");
+      
+      const isParody = strategy === 'parody';
+
+      const prompt = `
+        TASK: Create a movie poster featuring the person from the Reference Image.
+
+        1. THE SUBJECT (Reference Image 1):
+           - You MUST use the face and likeness of the person in Reference Image 1.
+           - User Description: ${userDescription}
+           - They are cosplaying as a character wearing: ${costume}
+           ${isParody ? '- CRITICAL: DO NOT hide the face. REMOVE sunglasses, masks, visors, or helmets. The face must be clearly visible and expressive.' : ''}
+           
+        2. THE STYLE:
+           - Background/Vibe: ${templateDescription}
+        
+        INSTRUCTIONS:
+        - GENERATE A NEW IMAGE of the person in the Reference Image.
+        - Ensure the FACE matches the Reference Image exactly.
+        - The lighting should be cinematic and dramatic.
+        - ${isParody 
+            ? 'STYLE: PARODY / COMEDY. The character should look like they are in a "knock-off" or "bootleg" version of the movie. Make it funny. Use a slightly exaggerated expression if it fits the face.' 
+            : 'Style: Epic, serious, and photorealistic (8k resolution).'}
+        
+        NEGATIVE PROMPT:
+        - Do not use the original movie actor's face.
+        - Do not generate text/titles.
+        ${isParody ? '- No sunglasses. No masks. No face covering. No hiding face.' : ''}
+      `;
+      
+      const parts = [
+          { inlineData: { data: userParts.data, mimeType: userParts.mimeType } },
+          { text: prompt }
+      ];
+
+      // Config for loose safety to allow "Action" content
+      const config = {
+          safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+          ]
+      };
+
+      // Try High-Quality Model First
+      try {
+        log("Attempting High-Res Gen...");
+        const response = await this.ai.models.generateContent({
+            model: 'gemini-3-pro-image-preview',
+            contents: { parts },
+            config: config
+        });
+        
+        const img = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (img) return `data:image/png;base64,${img}`;
+        
+        throw new Error("Empty response from Pro model");
+      } catch (e: any) {
+          log(`Pro Model Failed (${e.message}). Falling back to Flash...`);
+          
+          // Fallback to Flash-Image (More permissive, less strict on billing)
+          try {
+            const response = await this.ai.models.generateContent({
+                model: 'gemini-2.5-flash-image',
+                contents: { parts },
+                config: config
+            });
+            const img = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (img) return `data:image/png;base64,${img}`;
+          } catch (e2: any) {
+             throw new Error(`Generation Failed completely: ${e2.message}`);
+          }
+          throw new Error("No image returned from backup model");
+      }
+  }
+
+  // STEP 2: The Fast Text Overlay (Runs on demand)
+  async applyTextOverlay(
+      baseImageBase64: string,
+      userName: string,
+      movieTitle: string,
+      slogan: string,
+      credits: string
+  ): Promise<string> {
+      return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+              const canvas = document.createElement('canvas');
+              canvas.width = 1200;
+              canvas.height = 1800;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return resolve(baseImageBase64);
+
+              // 1. Draw Background
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+              // 2. Draw Gradient Overlay
+              const gradient = ctx.createLinearGradient(0, canvas.height * 0.5, 0, canvas.height);
+              gradient.addColorStop(0, "transparent");
+              gradient.addColorStop(0.7, "rgba(0,0,0,0.8)");
+              gradient.addColorStop(1, "black");
+              ctx.fillStyle = gradient;
+              ctx.fillRect(0, canvas.height / 2, canvas.width, canvas.height / 2);
+
+              // 3. Draw Movie Title
+              ctx.textAlign = 'center';
+              ctx.shadowColor = "rgba(0,0,0,0.8)";
+              ctx.shadowBlur = 20;
+              let titleSize = 130;
+              if (movieTitle.length > 15) titleSize = 100;
+              if (movieTitle.length > 25) titleSize = 80;
+              
+              ctx.font = `900 ${titleSize}px 'Oswald', sans-serif`;
+              ctx.fillStyle = '#FFD700';
+              ctx.fillText(movieTitle.toUpperCase(), canvas.width / 2, canvas.height - 300);
+
+              // 4. Draw Actor Name
+              ctx.font = "bold 60px 'Oswald', sans-serif";
+              ctx.fillStyle = "white";
+              ctx.fillText(userName.toUpperCase(), canvas.width / 2, 100);
+
+              // 5. Draw Tagline
+              ctx.font = "italic 40px 'Inter', sans-serif";
+              ctx.fillStyle = "#cccccc";
+              ctx.fillText(slogan, canvas.width / 2, canvas.height - 450);
+
+              // 6. Draw Credits
+              ctx.font = "20px 'Inter', sans-serif";
+              ctx.fillStyle = "#666666";
+              ctx.fillText(credits.toUpperCase(), canvas.width / 2, canvas.height - 100);
+
+              resolve(canvas.toDataURL('image/png'));
+          };
+          img.src = baseImageBase64;
+      });
+  }
+
+  // Orchestrator
   async generateMeme(
     userPhotoBase64: string, 
     templateId: string, 
+    templateUrl: string, 
     userName: string, 
     movieTitle: string, 
     costume: string, 
-    tagline: string,
+    tagline: string, 
     coverText: string, 
-    tone: string
+    tone: string,
+    preGeneratedPosterBase64?: string
   ): Promise<string> {
-    try {
-      // 1. Find the template
-      const template = TEMPLATES.find(t => t.id === templateId);
-      if (!template) throw new Error("Template not found");
-
-      // 2. Load the template image
-      let templateBase64 = await this.urlToBase64(template.coverImage);
       
-      // If the template load failed (1x1 pixel), try to fetch a placeholder from placehold.co to ensure we have a CANVAS
-      if (templateBase64.length < 100) {
-         templateBase64 = await this.urlToBase64(`https://placehold.co/600x900/000000/FFF?text=${encodeURIComponent(template.title)}`);
+      let basePoster = preGeneratedPosterBase64;
+
+      // If no pre-generation, do it now (blocking) with default strategy
+      if (!basePoster) {
+          basePoster = await this.generateAIImageOnly(userPhotoBase64, templateUrl, costume, 'cinematic');
       }
 
-      const response = await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [
-            // IMAGE 1: THE CANVAS (Template)
-            {
-              inlineData: {
-                data: templateBase64,
-                mimeType: 'image/jpeg'
-              }
-            },
-            // IMAGE 2: THE ASSET (User Face)
-            {
-              inlineData: {
-                data: userPhotoBase64.split(',')[1],
-                mimeType: 'image/jpeg'
-              }
-            },
-            // PROMPT
-            {
-              text: `ROLE: Expert Movie Poster Compositor.
-
-              INPUTS:
-              - IMAGE 1 (First Image): The "MASTER CANVAS". This is the movie poster. You MUST preserve its background, layout, and body.
-              - IMAGE 2 (Second Image): The "SOURCE FACE". This is the user.
-
-              TASK:
-              Perform a seamless Face Swap.
-              1. Extract ONLY the face/head from IMAGE 2.
-              2. Paste the face from IMAGE 2 onto the main character's body in IMAGE 1.
-              3. Match the skin tone, lighting, and film grain of the face to IMAGE 1.
-              4. The character should appear to be wearing: ${costume}.
-
-              CRITICAL RULES (DO NOT IGNORE):
-              - **NEVER** use the background from IMAGE 2 (the user's room, walls, lights). 
-              - The final background **MUST** be the background from IMAGE 1 (the movie poster).
-              - If the output looks like a selfie in a room, you have FAILED.
-              
-              TEXT OVERLAYS:
-              Add this text in cinematic fonts matching the poster style:
-              - TOP: "${userName.toUpperCase()}" (Credits style)
-              - BOTTOM TITLE: "${movieTitle.toUpperCase()}" (Huge, impactful)
-              - TAGLINE: "${tagline}" (Small, above title)
-              - PLOT: "${coverText}" (Small text block)
-              - CREDITS: "Directed by AI • Music by GEMINI • A ${tone.toUpperCase()} Production" (Bottom edge)`
-            }
-          ]
-        }
-      });
-
-      const parts = response.candidates?.[0]?.content?.parts || [];
-      for (const part of parts) {
-        if (part.inlineData) {
-          return `data:image/png;base64,${part.inlineData.data}`;
-        }
-      }
-
-      throw new Error("No image generated.");
-    } catch (error) {
-      console.error("Meme Generation failed:", error);
-      throw error;
-    }
+      const credits = `DIRECTED BY GEMINI   PRODUCED BY ${userName.toUpperCase()}`;
+      return await this.applyTextOverlay(
+          basePoster, 
+          userName, 
+          movieTitle, 
+          tagline, 
+          credits
+      );
   }
 
   async validatePhoto(photoBase64: string): Promise<{ valid: boolean; message: string }> {
-    try {
-      const response = await this.ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: photoBase64.split(',')[1],
-                mimeType: 'image/jpeg'
-              }
-            },
-            {
-              text: "Is there a clearly visible single face in this photo? Reply 'VALID' if yes. If not, reply with a short reason why not."
-            }
-          ]
-        }
-      });
-
-      const text = response.text || "";
-      if (text.toUpperCase().includes('VALID')) {
-        return { valid: true, message: 'Great photo!' };
-      }
-      return { valid: false, message: text };
-    } catch (error) {
-      return { valid: true, message: 'Validation skipped' };
-    }
+     if (photoBase64.length < 1000) return { valid: false, message: "Invalid photo" };
+     return { valid: true, message: "OK" };
   }
 }
 

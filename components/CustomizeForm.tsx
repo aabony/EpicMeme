@@ -1,12 +1,14 @@
 
 import React, { useRef, useState, useEffect } from 'react';
 import { Icons } from '../constants';
-import { MemeTemplate, MemeTone } from '../types';
-import { geminiService } from '../services/gemini';
+import { MemeTemplate, MemeTone, MemeData } from '../types';
+import { geminiService, GenerationStrategy } from '../services/gemini';
 
 interface CustomizeFormProps {
   template: MemeTemplate;
-  onGenerate: (photo: string, name: string, movieTitle: string, costume: string, tagline: string, coverText: string, tone: MemeTone) => void;
+  initialData?: MemeData;
+  generationError?: string | null;
+  onGenerate: (photo: string, name: string, movieTitle: string, costume: string, tagline: string, coverText: string, tone: MemeTone, posterUrl: string, preGenPoster?: string) => void;
   onBack: () => void;
 }
 
@@ -14,24 +16,37 @@ type WizardStep = 'casting' | 'typography';
 
 const TONES: MemeTone[] = ['Funny', 'Action', 'Horror', 'Romance'];
 
-const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onBack }) => {
-  const [wizardStep, setWizardStep] = useState<WizardStep>('casting');
+const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, initialData, generationError, onGenerate, onBack }) => {
+  const [wizardStep, setWizardStep] = useState<WizardStep>(
+    initialData?.userPhoto ? 'typography' : 'casting'
+  );
   
   // Data State
-  const [preview, setPreview] = useState<string | null>(null);
+  const [selectedPoster, setSelectedPoster] = useState<string>(
+    (initialData?.selectedPosterUrl && initialData.template?.id === template.id) 
+      ? initialData.selectedPosterUrl 
+      : (template.images?.[0] || template.coverImage)
+  );
+  
+  const [preview, setPreview] = useState<string | null>(initialData?.userPhoto || null);
   
   // Text State
-  const [name, setName] = useState('');
-  const [movieTitle, setMovieTitle] = useState(template.movieTitle);
-  const [tagline, setTagline] = useState('');
-  const [coverText, setCoverText] = useState('');
-  const [tone, setTone] = useState<MemeTone>('Funny');
+  const [name, setName] = useState(initialData?.userName || '');
+  const [movieTitle, setMovieTitle] = useState(initialData?.movieTitle || template.movieTitle);
+  const [tagline, setTagline] = useState(initialData?.tagline || '');
+  const [coverText, setCoverText] = useState(initialData?.coverText || '');
+  const [tone, setTone] = useState<MemeTone>(initialData?.tone || 'Funny');
   const [isGeneratingText, setIsGeneratingText] = useState(false);
   
-  // Validation State
+  // Validation & Error
   const [isValidating, setIsValidating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(generationError || null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
   
+  // AI Strategy State
+  const [strategy, setStrategy] = useState<GenerationStrategy>('cinematic');
+  const [bgStatus, setBgStatus] = useState<'idle' | 'processing' | 'done' | 'error'>('idle');
+
   // Camera State
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -39,15 +54,51 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
   const fileInputRef = useRef<HTMLInputElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
+  // BACKGROUND PROCESSING REF
+  const backgroundGenRef = useRef<Promise<string> | null>(null);
+
   useEffect(() => {
-    if (wizardStep === 'typography') {
-      nameInputRef.current?.focus();
-      // Auto-generate text if empty
-      if (!tagline && !coverText) {
-        handleGenerateText(tone);
-      }
+    if (generationError) setError(generationError);
+  }, [generationError]);
+
+  const addLog = (msg: string) => {
+      setDebugLog(prev => [...prev, msg]);
+  };
+
+  const triggerBackgroundGen = (forcedStrategy?: GenerationStrategy) => {
+      if (!preview || !selectedPoster) return;
+      
+      const strat = forcedStrategy || strategy;
+      console.log(`⚡ Starting Background AI (${strat})...`);
+      setBgStatus('processing');
+      setDebugLog([]); // Clear log on new run
+      addLog(`Casting call...`);
+
+      backgroundGenRef.current = geminiService.generateAIImageOnly(
+          preview,
+          selectedPoster,
+          template.costume,
+          strat,
+          addLog // Pass logger
+      ).then(result => {
+          setBgStatus('done');
+          addLog("Poster Painted!");
+          return result;
+      }).catch(err => {
+          console.error("Background Gen Failed:", err);
+          setBgStatus('error');
+          addLog(`Error: ${err.message}`);
+          return "";
+      });
+  };
+
+  // Auto-start when entering typography step
+  useEffect(() => {
+    if (wizardStep === 'typography' && preview && selectedPoster && !backgroundGenRef.current) {
+        setTimeout(() => nameInputRef.current?.focus(), 100);
+        triggerBackgroundGen('cinematic');
     }
-  }, [wizardStep]);
+  }, [wizardStep, preview, selectedPoster]);
 
   // Clean up camera on unmount
   useEffect(() => {
@@ -109,6 +160,11 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
     setPreview(base64);
     setError(null);
     setIsValidating(true);
+    // Reset background gen if photo changes
+    backgroundGenRef.current = null;
+    setBgStatus('idle');
+    setDebugLog([]);
+    
     const { valid, message } = await geminiService.validatePhoto(base64);
     if (!valid) {
       setError(message);
@@ -118,6 +174,7 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
 
   const handleGenerateText = async (selectedTone: MemeTone) => {
     setIsGeneratingText(true);
+    setError(null);
     const result = await geminiService.generateCreativeText(template.title, selectedTone);
     setMovieTitle(result.movieTitle);
     setTagline(result.slogan);
@@ -127,11 +184,38 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
 
   const handleToneChange = (newTone: MemeTone) => {
     setTone(newTone);
-    handleGenerateText(newTone);
   };
 
-  const isPhotoValid = preview && !error && !isValidating;
-  const isTextValid = name.trim().length > 1 && movieTitle.trim().length > 1;
+  const onGenerateClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    setError(null);
+    
+    if (preview) {
+        if (!name.trim()) {
+            setError("Lead Actor name is required.");
+            return;
+        }
+
+        let preGenPoster = undefined;
+        if (backgroundGenRef.current) {
+            try {
+                const result = await backgroundGenRef.current;
+                if (result) preGenPoster = result;
+            } catch (e) {
+                console.warn("Background gen had error");
+            }
+        }
+
+        onGenerate(preview, name, movieTitle, template.costume, tagline, coverText, tone, selectedPoster, preGenPoster);
+    } else {
+        alert("Please upload a photo first!");
+        setWizardStep('casting');
+    }
+  };
+
+  const isPhotoValid = !!preview; 
+  const isTextValid = name.trim().length >= 2 && movieTitle.trim().length > 0;
+  const variants = template.images && template.images.length > 0 ? template.images : [template.coverImage];
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-12">
@@ -149,45 +233,97 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row gap-12 items-start">
+      <div className="flex flex-col-reverse lg:flex-row-reverse gap-8 lg:gap-12 items-start">
         {/* Preview Column */}
-        <div className="lg:w-1/3 w-full">
-          <div className="sticky top-32 space-y-4">
-            <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-yellow-500/80">
-              {wizardStep === 'casting' ? '1. CASTING CALL' : '2. PRODUCTION DETAILS'}
-            </h3>
-            <div className="relative rounded-[2rem] overflow-hidden aspect-[2/3] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.5)] group">
+        <div className="w-full lg:w-1/4">
+          <div className="sticky top-8 space-y-4">
+            <div className="flex justify-between items-end">
+                <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-yellow-500/80">
+                  REF POSTER
+                </h3>
+                {wizardStep === 'typography' && (
+                    <span className={`text-[9px] font-bold uppercase ${bgStatus === 'processing' ? 'text-yellow-500 animate-pulse' : bgStatus === 'done' ? 'text-green-500' : bgStatus === 'error' ? 'text-red-500' : 'text-white/50'}`}>
+                        {bgStatus === 'processing' ? 'Painting...' : bgStatus === 'done' ? 'Ready!' : bgStatus === 'error' ? 'Failed' : 'Waiting'}
+                    </span>
+                )}
+            </div>
+
+            {/* Selected Thumbnail Card */}
+            <div className="relative rounded-2xl overflow-hidden border border-white/10 shadow-lg group bg-white/5 w-48 aspect-[2/3] mx-auto transition-all">
               <img 
-                src={template.coverImage} 
-                className="w-full h-full object-cover opacity-50 group-hover:opacity-100 transition-opacity duration-500" 
+                src={selectedPoster} 
+                className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" 
                 alt={template.title}
+                referrerPolicy="no-referrer"
               />
-              {wizardStep === 'typography' && (
-                <div className="absolute inset-0 flex flex-col justify-between p-6 pointer-events-none">
-                  <div className="text-center pt-8">
-                    <p className="font-oswald text-white uppercase tracking-widest text-xl drop-shadow-md">{name || 'YOUR NAME'}</p>
-                  </div>
-                  <div className="text-center pb-8 space-y-2">
-                    <p className="font-sans text-white/80 text-xs uppercase tracking-[0.3em] font-bold drop-shadow-md">{tagline}</p>
-                    <p className="font-oswald text-yellow-500 text-4xl font-bold uppercase tracking-tighter leading-none drop-shadow-md">{movieTitle}</p>
-                  </div>
-                </div>
-              )}
-              {preview && wizardStep === 'casting' && (
-                 <img src={preview} className="absolute bottom-4 right-4 w-24 h-24 rounded-xl border-2 border-yellow-500 object-cover shadow-2xl" />
+              {preview && (
+                 <img src={preview} className="absolute bottom-2 right-2 w-10 h-10 rounded-lg border border-yellow-500 object-cover shadow-xl z-10" />
               )}
             </div>
+
+            {/* STRATEGY SELECTOR - NEW! */}
+            {wizardStep === 'typography' && (
+                <div className="bg-white/5 p-3 rounded-xl border border-white/10">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-white/40 mb-2 text-center">Re-Imaging Style</p>
+                    <div className="flex gap-1 mb-3">
+                        <button 
+                            onClick={() => { setStrategy('cinematic'); triggerBackgroundGen('cinematic'); }}
+                            className={`flex-1 py-2 text-[9px] font-bold uppercase rounded border ${strategy === 'cinematic' ? 'bg-yellow-500 text-black border-yellow-500' : 'bg-transparent text-white/50 border-white/10 hover:border-white/30'}`}
+                            title="Epic, high-budget look"
+                        >
+                            Cinematic
+                        </button>
+                        <button 
+                            onClick={() => { setStrategy('parody'); triggerBackgroundGen('parody'); }}
+                            className={`flex-1 py-2 text-[9px] font-bold uppercase rounded border ${strategy === 'parody' ? 'bg-yellow-500 text-black border-yellow-500' : 'bg-transparent text-white/50 border-white/10 hover:border-white/30'}`}
+                            title="Funny, exaggerated look"
+                        >
+                            Parody
+                        </button>
+                    </div>
+
+                    {/* Debug Console */}
+                    <div className="bg-black/50 rounded p-2 h-24 overflow-y-auto font-mono text-[9px] text-green-400/80 leading-relaxed border border-white/5">
+                        {debugLog.length === 0 && <span className="opacity-30">Waiting for logs...</span>}
+                        {debugLog.map((log, i) => (
+                            <div key={i}>&gt; {log}</div>
+                        ))}
+                    </div>
+                </div>
+            )}
+            
+            {variants.length > 1 && (
+                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide justify-center">
+                    {variants.map((v, i) => (
+                        <div 
+                            key={i} 
+                            onClick={() => {
+                                setSelectedPoster(v);
+                                backgroundGenRef.current = null;
+                                setBgStatus('idle');
+                                if(wizardStep === 'typography') triggerBackgroundGen();
+                            }}
+                            className={`w-10 h-14 flex-shrink-0 rounded border cursor-pointer overflow-hidden transition-all ${selectedPoster === v ? 'border-yellow-500 ring-2 ring-yellow-500/50' : 'border-white/20 opacity-50 hover:opacity-100'}`}
+                        >
+                            <img src={v} className="w-full h-full object-cover" />
+                        </div>
+                    ))}
+                </div>
+            )}
           </div>
         </div>
 
         {/* Form Column */}
-        <div className="lg:w-2/3 w-full space-y-10 bg-white/[0.03] border border-white/10 rounded-[2.5rem] p-10 backdrop-blur-xl shadow-2xl">
+        <div className="w-full lg:w-3/4 space-y-10 bg-white/[0.03] border border-white/10 rounded-[2.5rem] p-6 lg:p-10 backdrop-blur-xl shadow-2xl">
           
           {wizardStep === 'casting' && (
             <div className="space-y-8 animate-fadeIn">
               <header>
-                <h2 className="text-4xl font-oswald font-bold uppercase tracking-tight mb-2">Upload <span className="text-yellow-500">Headshot</span></h2>
-                <p className="text-white/40 font-medium">Take a photo or upload a file. Look directly at the camera.</p>
+                <div className="flex items-center gap-3 mb-2">
+                    <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-yellow-500/80">1. CASTING CALL</h3>
+                </div>
+                <h2 className="text-3xl lg:text-4xl font-oswald font-bold uppercase tracking-tight mb-2">Upload <span className="text-yellow-500">Headshot</span></h2>
+                <p className="text-white/40 font-medium text-sm">Take a photo or upload a file. Look directly at the camera.</p>
               </header>
 
               <div>
@@ -279,7 +415,8 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
             <div className="space-y-8 animate-fadeIn">
               <header className="flex justify-between items-start">
                 <div>
-                   <h2 className="text-4xl font-oswald font-bold uppercase tracking-tight mb-2">Typography <span className="text-yellow-500">Setup</span></h2>
+                   <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-yellow-500/80 mb-2">2. PRODUCTION DETAILS</h3>
+                   <h2 className="text-3xl lg:text-4xl font-oswald font-bold uppercase tracking-tight mb-2">Typography <span className="text-yellow-500">Setup</span></h2>
                    <p className="text-white/40 font-medium">Customize the credits to make it official.</p>
                 </div>
               </header>
@@ -298,18 +435,29 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
                       </button>
                     ))}
                   </div>
-                  <p className="text-[10px] text-white/30 mt-2 text-right">Changing tone auto-generates new text.</p>
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-white/30 mb-2">Lead Actor</label>
+                  <div className="flex justify-between items-end mb-2">
+                    <label className="block text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
+                        Lead Actor <span className="text-yellow-500">*</span>
+                    </label>
+                    <span className={`text-[9px] font-bold tracking-widest ${name.length > 20 ? 'text-red-500' : 'text-white/20'}`}>
+                        {name.length}/20
+                    </span>
+                  </div>
                   <input 
                     ref={nameInputRef}
                     type="text"
+                    required
+                    maxLength={20}
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => {
+                        setError(null);
+                        setName(e.target.value);
+                    }}
                     placeholder="YOUR NAME"
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-5 py-4 text-white placeholder:text-white/10 focus:outline-none focus:border-yellow-500 transition-colors font-oswald text-xl uppercase tracking-wider"
+                    className={`w-full bg-white/5 border rounded-xl px-5 py-4 text-white placeholder:text-white/10 focus:outline-none focus:border-yellow-500 transition-colors font-oswald text-xl uppercase tracking-wider ${!name.trim() && error ? 'border-red-500/50' : 'border-white/10'}`}
                   />
                 </div>
 
@@ -347,25 +495,43 @@ const CustomizeForm: React.FC<CustomizeFormProps> = ({ template, onGenerate, onB
                             />
                         </div>
                     </div>
-                    
-                    {isGeneratingText && (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                            <div className="bg-black/80 px-4 py-2 rounded-lg flex items-center gap-3">
-                                <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
-                                <span className="text-xs font-bold uppercase text-yellow-500 tracking-widest">Writing Script...</span>
-                            </div>
-                        </div>
-                    )}
                 </div>
               </div>
 
-              <div className="pt-8">
+              {/* Error Message Display */}
+              {error && (
+                  <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center gap-3 animate-pulse">
+                    <span className="text-red-500 text-xl">⚠️</span>
+                    <p className="text-red-500 text-xs font-bold uppercase tracking-wider">{error}</p>
+                  </div>
+              )}
+
+              <div className="pt-4 space-y-4">
+                <button
+                    type="button"
+                    onClick={() => handleGenerateText(tone)}
+                    disabled={isGeneratingText}
+                    className="w-full bg-white/10 border border-white/20 text-white py-4 rounded-2xl font-bold uppercase tracking-wider hover:bg-white/20 transition-all flex items-center justify-center gap-3 group"
+                >
+                    {isGeneratingText ? (
+                        <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            WRITING SCRIPT...
+                        </>
+                    ) : (
+                        <>
+                            <span className="group-hover:scale-110 transition-transform"><Icons.Magic /></span>
+                            WRITE AI SCRIPT
+                        </>
+                    )}
+                </button>
+
                 <button 
                   disabled={!isTextValid}
-                  onClick={() => preview && onGenerate(preview, name, movieTitle, template.costume, tagline, coverText, tone)}
-                  className="w-full relative group"
+                  onClick={onGenerateClick}
+                  className="w-full relative group cursor-pointer"
                 >
-                   <div className="absolute -inset-1 bg-gradient-to-r from-yellow-600 to-yellow-400 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-1000 group-hover:duration-200 group-disabled:opacity-0"></div>
+                   <div className="absolute -inset-1 bg-gradient-to-r from-yellow-600 to-yellow-400 rounded-2xl blur opacity-25 group-hover:opacity-75 transition duration-1000 group-hover:duration-200 group-disabled:opacity-0 pointer-events-none"></div>
                    <div className="relative bg-yellow-500 text-black py-5 rounded-2xl font-black text-lg disabled:opacity-50 disabled:grayscale transition-all hover:bg-white flex items-center justify-center gap-3">
                      GENERATE POSTER <span className="text-2xl">⚡</span>
                    </div>

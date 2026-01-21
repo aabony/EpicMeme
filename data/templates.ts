@@ -3,107 +3,75 @@ import { MemeTemplate } from '../types';
 
 export const TEMPLATES: MemeTemplate[] = [
   {
-    id: 'naked_gun',
-    title: 'The Naked Gun',
-    category: 'Slapstick',
-    coverImage: '/assets/templates/naked_gun.jpg',
-    movieTitle: 'POLICE SQUAD',
-    costume: 'a classic 80s grey suit and tie with a police badge'
+    id: 'terminator',
+    title: 'The Terminator',
+    category: 'Sci-Fi',
+    coverImage: 'https://image.tmdb.org/t/p/original/qvktm0BHcnmDpul4Hz01GIazWPr.jpg',
+    images: ['https://image.tmdb.org/t/p/original/qvktm0BHcnmDpul4Hz01GIazWPr.jpg'],
+    movieTitle: 'THE TERMINATOR',
+    costume: 'a leather jacket, sunglasses, and a robotic eye'
+  },
+  {
+    id: 'good_bad_ugly',
+    title: 'The Good, The Bad & The Ugly',
+    category: 'Action',
+    coverImage: 'https://image.tmdb.org/t/p/original/bX2xnavhMYjWDoZp1VM6VnU1xwe.jpg',
+    images: ['https://image.tmdb.org/t/p/original/bX2xnavhMYjWDoZp1VM6VnU1xwe.jpg'],
+    movieTitle: 'THE GOOD, THE BAD & THE UGLY',
+    costume: 'a cowboy hat, dusty poncho, and cigarillo'
+  },
+  {
+    id: 'cool_runnings',
+    title: 'Cool Runnings',
+    category: 'Comedy',
+    coverImage: 'https://upload.wikimedia.org/wikipedia/en/a/a2/Cool_Runnings_poster.jpg',
+    images: ['https://upload.wikimedia.org/wikipedia/en/a/a2/Cool_Runnings_poster.jpg'],
+    movieTitle: 'COOL RUNNINGS',
+    costume: 'a Jamaican bobsled team uniform or colorful spandex suit'
+  },
+  {
+    id: 'matrix',
+    title: 'The Matrix',
+    category: 'Sci-Fi',
+    coverImage: 'https://image.tmdb.org/t/p/original/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg',
+    images: ['https://image.tmdb.org/t/p/original/f89U3ADr1oiB1s9GkdPOEpXUk5H.jpg'],
+    movieTitle: 'THE MATRIX',
+    costume: 'a long black leather trench coat and dark sunglasses'
+  },
+  {
+    id: 'superman',
+    title: 'Superman',
+    category: 'Action',
+    coverImage: 'https://upload.wikimedia.org/wikipedia/en/3/30/Superman_1978_poster.jpg',
+    images: ['https://upload.wikimedia.org/wikipedia/en/3/30/Superman_1978_poster.jpg'],
+    movieTitle: 'SUPERMAN',
+    costume: 'a blue superhero suit with a red cape and S shield'
+  },
+  {
+    id: 'spiderman',
+    title: 'Spider-Man',
+    category: 'Action',
+    coverImage: 'https://upload.wikimedia.org/wikipedia/en/f/f3/Spider-Man2002Poster.jpg',
+    images: ['https://upload.wikimedia.org/wikipedia/en/f/f3/Spider-Man2002Poster.jpg'],
+    movieTitle: 'SPIDER-MAN',
+    costume: 'a red and blue spider superhero suit'
   },
   {
     id: 'airplane',
     title: 'Airplane!',
     category: 'Comedy',
-    coverImage: '/assets/templates/airplane.jpg',
-    movieTitle: 'DONT CALL ME SHIRLEY',
-    costume: 'a commercial airline pilot uniform with a tie and headset'
+    coverImage: 'https://upload.wikimedia.org/wikipedia/en/f/f5/Airplane%21.jpg', 
+    images: ['https://upload.wikimedia.org/wikipedia/en/f/f5/Airplane%21.jpg'],
+    movieTitle: 'AIRPLANE!',
+    costume: 'a retro airline pilot uniform or stewardess outfit'
   },
   {
-    id: 'cool_runnings',
-    title: 'Cool Runnings',
-    category: 'Sports Comedy',
-    coverImage: '/assets/templates/cool_runnings.jpg',
-    movieTitle: 'JAMAICAN GOLD',
-    costume: 'a yellow and green spandex bobsled suit with a helmet'
-  },
-  {
-    id: 'sgt_peppers',
-    title: "Sgt Pepper's",
-    category: 'Music Group',
-    coverImage: '/assets/templates/sgt_peppers.jpg',
-    movieTitle: 'LONELY HEARTS',
-    costume: 'a bright neon satin military marching band uniform'
-  },
-  {
-    id: 'die_hard',
-    title: 'Die Hard',
-    category: 'Action Hero',
-    coverImage: '/assets/templates/die_hard.jpg',
-    movieTitle: 'HARD TO KILL',
-    costume: 'a dirty, sweat-stained white tank top'
-  },
-  {
-    id: 'patriot_games',
-    title: 'Patriot Games',
-    category: 'Thriller',
-    coverImage: '/assets/templates/patriot_games.jpg',
-    movieTitle: 'STATE SECRETS',
-    costume: 'a sharp navy blue business suit and tie'
-  },
-  {
-    id: 'sound_of_music',
-    title: 'Sound of Music',
+    id: 'sgt_pepper',
+    title: "Sgt. Pepper's Band",
     category: 'Musical',
-    coverImage: '/assets/templates/sound_of_music.jpg',
-    movieTitle: 'THE HILLS SING',
-    costume: 'a vintage 1930s Austrian dress with an apron'
-  },
-  {
-    id: 'terminator',
-    title: 'Terminator',
-    category: 'Sci-Fi',
-    coverImage: '/assets/templates/terminator.jpg',
-    movieTitle: 'CYBORG DOOM',
-    costume: 'a black leather biker jacket and dark sunglasses'
-  },
-  {
-    id: 'spiderman',
-    title: 'Spiderman',
-    category: 'Superhero',
-    coverImage: '/assets/templates/spiderman.jpg',
-    movieTitle: 'WEB SLINGER',
-    costume: 'a red and blue spandex superhero suit with a spider emblem'
-  },
-  {
-    id: 'barbie',
-    title: 'Barbie',
-    category: 'Pink/Pop',
-    coverImage: '/assets/templates/barbie.jpg',
-    movieTitle: 'PLASTIC LIFE',
-    costume: 'a bright pink chic fashion dress with sparkles'
-  },
-  {
-    id: 'matrix',
-    title: 'The Matrix',
-    category: 'Cyberpunk',
-    coverImage: '/assets/templates/matrix.jpg',
-    movieTitle: 'SYSTEM FAIL',
-    costume: 'a long black leather trench coat'
-  },
-  {
-    id: 'titanic',
-    title: 'Titanic',
-    category: 'Romance',
-    coverImage: '/assets/templates/titanic.jpg',
-    movieTitle: 'OCEAN HEART',
-    costume: 'vintage 1912 formal evening wear'
-  },
-  {
-    id: 'home_alone',
-    title: 'Home Alone',
-    category: 'Comedy',
-    coverImage: '/assets/templates/home_alone.jpg',
-    movieTitle: 'LEFT BEHIND',
-    costume: 'a heavy wool winter parka and a red scarf'
+    coverImage: 'https://upload.wikimedia.org/wikipedia/en/1/17/Sgt._Pepper%27s_Lonely_Hearts_Club_Band_%28film%29_poster.jpg',
+    images: ['https://upload.wikimedia.org/wikipedia/en/1/17/Sgt._Pepper%27s_Lonely_Hearts_Club_Band_%28film%29_poster.jpg'],
+    movieTitle: "SGT. PEPPER'S BAND",
+    costume: 'a colorful satin marching band uniform with epaulettes'
   }
 ];
