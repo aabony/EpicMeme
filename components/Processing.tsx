@@ -1,31 +1,19 @@
 
 import React, { useEffect, useState } from 'react';
 
-const Processing: React.FC = () => {
+interface ProcessingProps {
+  message?: string;
+}
+
+const Processing: React.FC<ProcessingProps> = ({ message }) => {
   const [progress, setProgress] = useState(0);
-  const messages = [
-    "Injecting raw star power...",
-    "Adjusting cinematic lighting...",
-    "Applying blockbuster color grading...",
-    "Replacing face with legendary lead actor...",
-    "Finalizing credits and title design...",
-    "Generating Oscar buzz..."
-  ];
-  const [msgIndex, setMsgIndex] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setProgress(p => Math.min(p + 1, 99));
-    }, 100);
+    }, 150);
     
-    const msgInterval = setInterval(() => {
-      setMsgIndex(i => (i + 1) % messages.length);
-    }, 2000);
-
-    return () => {
-      clearInterval(interval);
-      clearInterval(msgInterval);
-    };
+    return () => clearInterval(interval);
   }, []);
 
   return (
@@ -45,7 +33,7 @@ const Processing: React.FC = () => {
         Creating Your <span className="text-yellow-500">Masterpiece</span>
       </h2>
       <p className="text-white/60 text-lg animate-pulse h-8">
-        {messages[msgIndex]}
+        {message || "Generating Oscar buzz..."}
       </p>
     </div>
   );

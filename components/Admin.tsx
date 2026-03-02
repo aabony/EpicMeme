@@ -288,7 +288,7 @@ const Admin: React.FC<AdminProps> = ({ templates, onUpdateTemplate, onExit }) =>
             <div className="flex justify-between items-start mb-6">
                 <div>
                     <h3 className="font-oswald font-bold text-2xl uppercase mb-1">{t.title}</h3>
-                    <div className="text-xs font-bold text-yellow-500 uppercase tracking-widest">{t.category}</div>
+                    <div className="text-xs font-bold text-yellow-500 uppercase tracking-widest">{t.theme}</div>
                 </div>
                 <div className="text-xs text-white/40 uppercase font-mono bg-black/30 px-3 py-1 rounded">
                     ID: {t.id}
@@ -308,20 +308,16 @@ const Admin: React.FC<AdminProps> = ({ templates, onUpdateTemplate, onExit }) =>
                  />
 
                 {/* Existing Images */}
-                {(t.images && t.images.length > 0 ? t.images : [t.coverImage]).map((img, idx) => (
-                    <div key={idx} className="flex-shrink-0 w-32 h-48 bg-black rounded-lg overflow-hidden relative group border border-white/10 hover:border-yellow-500 transition-colors">
-                        <img 
-                            src={img} 
-                            className="w-full h-full object-cover"
-                            alt={`${t.title} variant ${idx}`} 
-                        />
-                        {idx === 0 && (
-                            <div className="absolute top-2 left-2 bg-yellow-500 text-black text-[10px] font-bold px-2 py-0.5 rounded shadow-lg uppercase">
-                                Main
-                            </div>
-                        )}
+                <div className="flex-shrink-0 w-32 h-48 bg-black rounded-lg overflow-hidden relative group border border-white/10 hover:border-yellow-500 transition-colors">
+                    <img 
+                        src={t.coverUrl} 
+                        className="w-full h-full object-cover"
+                        alt={`${t.title} main`} 
+                    />
+                    <div className="absolute top-2 left-2 bg-yellow-500 text-black text-[10px] font-bold px-2 py-0.5 rounded shadow-lg uppercase">
+                        Main
                     </div>
-                ))}
+                </div>
             </div>
           </div>
         ))}

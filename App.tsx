@@ -2,29 +2,28 @@
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Hero from './components/Hero';
-import TemplateGallery from './components/TemplateGallery';
-import CustomizeForm from './components/CustomizeForm';
+import Generator from './components/Generator';
 import Processing from './components/Processing';
 import ResultDisplay from './components/ResultDisplay';
 import Admin from './components/Admin';
-import { GenerationStep, MemeData, MemeTemplate, MemeTone } from './types';
+import Intercept from './components/Intercept';
+import { GenerationStep, MemeData, MemeTemplate, MemeTone, PosterBlueprint } from './types';
 import { geminiService } from './services/gemini';
 
 // Extends GenerationStep for internal app routing only
-type AppStep = GenerationStep | 'hero' | 'admin';
+type AppStep = GenerationStep | 'hero' | 'admin' | 'generator';
 
 const App: React.FC = () => {
   const [step, setStep] = useState<AppStep>('hero');
   const [templates, setTemplates] = useState<MemeTemplate[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string>('');
+  const [blueprint, setBlueprint] = useState<PosterBlueprint | null>(null);
   
   const [data, setData] = useState<MemeData>({
     userPhoto: null,
     userName: '',
-    movieTitle: '',
-    tagline: '',
-    coverText: '',
     tone: 'Funny',
     template: null,
     resultUrl: null
@@ -42,70 +41,55 @@ const App: React.FC = () => {
     setIsLoadingTemplates(false);
   };
 
-  const handleStart = () => setStep('gallery');
+  const handleStart = () => setStep('generator');
 
-  const handleTemplateSelected = (template: MemeTemplate) => {
-    // Only reset data if choosing a new template, but keep user name if entered
-    setData(prev => ({ 
-      ...prev, 
-      template,
-      movieTitle: template.movieTitle, 
-      tagline: '',
-      coverText: '',
-      tone: 'Funny',
-      userPhoto: null, // Reset photo for new template
-      selectedPosterUrl: template.images?.[0] || template.coverImage
-    }));
-    setGenerationError(null);
-    setStep('customize');
-  };
-
-  const handleGenerate = async (
+  const handlePrepareBlueprint = async (
+    template: MemeTemplate,
+    templateBase64: string,
     photo: string, 
     name: string, 
-    title: string, 
-    costume: string, 
-    tagline: string,
-    coverText: string,
     tone: MemeTone,
-    posterUrl: string,
-    preGeneratedPoster?: string // Optional background art
   ) => {
-    console.log("App.handleGenerate called with:", { name, title, tone, posterUrl: !!posterUrl, preGenerated: !!preGeneratedPoster });
     setGenerationError(null);
+    setProgress('Writing Script...');
     
-    if (!data.template) {
-        console.error("Missing template in state!");
-        return;
-    }
-    
-    // 1. SAVE STATE IMMEDIATELY so it's not lost if we crash/error
-    // We update the state container with the latest form values
     setData(prev => ({ 
       ...prev, 
       userPhoto: photo, 
       userName: name, 
-      movieTitle: title, 
-      tagline: tagline,
-      coverText: coverText,
       tone: tone,
-      selectedPosterUrl: posterUrl
+      template: template
     }));
 
     setStep('processing');
     
     try {
-      const result = await geminiService.generateMeme(
+      const result = await geminiService.prepareBlueprint(
         photo,
-        data.template.id, 
-        posterUrl, 
+        templateBase64, 
         name,
-        title,
-        costume,
-        tagline,
-        coverText,
         tone,
-        preGeneratedPoster // Pass the already completed background if available!
+        (stepMsg) => setProgress(stepMsg)
+      );
+      
+      setBlueprint(result);
+      setStep('intercept');
+    } catch (err) {
+      console.error("Blueprint error:", err);
+      setGenerationError((err as Error).message || "Unknown error occurred");
+      setStep('generator');
+    }
+  };
+
+  const handleGenerateFinal = async (finalBlueprint: PosterBlueprint) => {
+    setGenerationError(null);
+    setProgress('Painting Poster...');
+    setStep('processing');
+    
+    try {
+      const result = await geminiService.executePosterBlueprint(
+        finalBlueprint,
+        (stepMsg) => setProgress(stepMsg)
       );
       
       setData(prev => ({ 
@@ -116,24 +100,22 @@ const App: React.FC = () => {
     } catch (err) {
       console.error("Generation error:", err);
       setGenerationError((err as Error).message || "Unknown error occurred");
-      // Go back to form, data is already saved in state so form will rehydrate
-      setStep('customize');
+      setStep('intercept');
     }
   };
 
   const reset = () => {
-    setStep('gallery');
+    setStep('generator');
     setData({
       userPhoto: null,
       userName: '',
-      movieTitle: '',
-      tagline: '',
-      coverText: '',
       tone: 'Funny',
       template: null,
       resultUrl: null
     });
+    setBlueprint(null);
     setGenerationError(null);
+    setProgress('');
   };
 
   return (
@@ -143,36 +125,37 @@ const App: React.FC = () => {
       <main className="flex-grow">
         {step === 'hero' && <Hero onStart={handleStart} />}
         
-        {step === 'gallery' && (
-          <TemplateGallery 
-            templates={templates} 
-            onSelect={handleTemplateSelected} 
-            isLoading={isLoadingTemplates}
-          />
-        )}
-
-        {step === 'customize' && data.template && (
-          <CustomizeForm 
-            template={data.template}
-            initialData={data} // Pass preserved data
+        {step === 'generator' && (
+          <Generator 
+            templates={templates}
             generationError={generationError}
-            onBack={() => setStep('gallery')}
-            onGenerate={handleGenerate}
+            onGenerate={handlePrepareBlueprint}
           />
         )}
 
-        {step === 'processing' && <Processing />}
+        {step === 'intercept' && blueprint && data.template && (
+          <Intercept 
+            initialBlueprint={blueprint}
+            templateTitle={data.template.title}
+            userName={data.userName}
+            tone={data.tone}
+            onGenerate={handleGenerateFinal}
+            onBack={() => setStep('generator')}
+          />
+        )}
+
+        {step === 'processing' && <Processing message={progress} />}
 
         {step === 'result' && data.resultUrl && (
           <ResultDisplay imageUrl={data.resultUrl} onReset={reset} />
         )}
 
         {step === 'admin' && (
-            <Admin 
-                templates={templates} 
-                onUpdateTemplate={loadTemplates}
-                onExit={() => setStep('gallery')}
-            />
+          <Admin 
+              templates={templates} 
+              onUpdateTemplate={loadTemplates}
+              onExit={() => setStep('generator')}
+          />
         )}
       </main>
 

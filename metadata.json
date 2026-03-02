@@ -1,5 +1,5 @@
 {
-  "name": "EpicMeme - AI Movie Poster Generator",
+  "name": "EpicMeme 2.0 - AI Movie Poster Generator (Feb28)",
   "description": "Transform your selfies into epic movie posters using AI inpainting and cinematic styling.",
   "requestFramePermissions": [
     "camera"

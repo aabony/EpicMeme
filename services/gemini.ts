@@ -1,5 +1,5 @@
-import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold } from "@google/genai";
-import { MemeTone, MemeTemplate } from "../types";
+import { GoogleGenAI, Type, HarmCategory, HarmBlockThreshold, PersonGeneration } from "@google/genai";
+import { MemeTone, MemeTemplate, PosterBlueprint } from "../types";
 import { TONE_PROMPTS } from "../data/tonePrompts";
 import { TEMPLATES as FALLBACK_TEMPLATES } from "../data/templates";
 
@@ -30,7 +30,7 @@ export class MemeGeneratorService {
   private localTemplates: MemeTemplate[];
 
   constructor() {
-    const apiKey = getEnv('API_KEY', 'VITE_GEMINI_API_KEY');
+    const apiKey = process.env.GEMINI_API_KEY || getEnv('API_KEY', 'VITE_GEMINI_API_KEY');
     this.ai = new GoogleGenAI({ apiKey });
     this.baseUrl = getEnv('REACT_APP_API_URL', 'VITE_API_URL') || 'http://localhost:8080';
     this.apiEndpoint = `${this.baseUrl}/generate-meme`;
@@ -48,57 +48,41 @@ export class MemeGeneratorService {
   }
 
   async uploadTemplateImage(templateId: string, file: File): Promise<string> {
-    const objectUrl = URL.createObjectURL(file);
+    const base64Url = await this.blobToBase64(file);
     const template = this.localTemplates.find(t => t.id === templateId);
     if (template) {
-        if (!template.images) template.images = [];
-        template.images.unshift(objectUrl);
-        template.coverImage = objectUrl;
+        template.coverUrl = base64Url;
     }
-    return objectUrl;
+    return base64Url;
   }
 
   async generateTemplateBackground(templateId: string, prompt: string): Promise<string> {
       try {
+          // Use Gemini 2.5 Flash Image for high quality background generation
           const response = await this.ai.models.generateContent({
-              model: 'gemini-3-pro-image-preview', // Higher quality for admin gen
+              model: 'gemini-2.5-flash-image', 
               contents: {
-                  parts: [
-                      { text: `Movie poster background for ${prompt}. Cinematic, high quality, 8k, vertical aspect ratio. No text.` }
-                  ]
+                parts: [{ text: `Movie poster background for ${prompt}. Cinematic, high quality, 8k, vertical aspect ratio. No text.` }]
               },
               config: {
-                safetySettings: [
-                    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-                    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH }
-                ]
+                imageConfig: {
+                  aspectRatio: '3:4',
+                }
               }
           });
 
-          let base64Data = '';
-          for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-                base64Data = part.inlineData.data;
-                break;
-            }
-          }
+          const base64Data = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
 
           if (!base64Data) throw new Error("No image generated");
 
-          const res = await fetch(`data:image/png;base64,${base64Data}`);
-          const blob = await res.blob();
-          const objectUrl = URL.createObjectURL(blob);
+          const dataUrl = `data:image/png;base64,${base64Data}`;
 
           const template = this.localTemplates.find(t => t.id === templateId);
           if (template) {
-                if (!template.images) template.images = [];
-                template.images.unshift(objectUrl);
-                template.coverImage = objectUrl;
+                template.coverUrl = dataUrl;
           }
           
-          return objectUrl;
+          return dataUrl;
 
       } catch (clientError) {
           console.error("Client-side generation failed:", clientError);
@@ -130,15 +114,89 @@ export class MemeGeneratorService {
   }
 
   private getBase64Details(base64String: string): { data: string, mimeType: string } {
-    // Robust parsing: split by comma instead of complex regex
     if (base64String.includes(',')) {
         const parts = base64String.split(',');
         const mimeMatch = parts[0].match(/:(.*?);/);
         const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
         return { mimeType: mime, data: parts[1] };
     }
-    // Assume it's pure data if no comma
     return { mimeType: 'image/jpeg', data: base64String };
+  }
+
+  /**
+   * Helper to strip the "data:image/jpeg;base64," prefix if present
+   */
+  private cleanBase64(base64String: string): string {
+    return base64String.includes(',') ? base64String.split(',')[1] : base64String;
+  }
+
+  /**
+   * STEP 1: The Blueprint
+   * Uses Gemini Pro to analyze both images and generate the text and Image prompt.
+   */
+  async generatePosterBlueprint(
+    templateBase64: string, 
+    userSelfieBase64: string, 
+    userName: string, 
+    tone: string
+  ): Promise<PosterBlueprint> {
+    try {
+      console.log("Generating Blueprint with Gemini Pro...");
+      
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-3.1-pro-preview', // Use the most capable Pro model available
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: this.cleanBase64(templateBase64),
+                mimeType: 'image/jpeg'
+              }
+            },
+            {
+              inlineData: {
+                data: this.cleanBase64(userSelfieBase64),
+                mimeType: 'image/jpeg'
+              }
+            },
+            {
+              text: `
+              Image 1 is a reference movie poster. Image 2 is a user named ${userName}. 
+              Write a blueprint for a parody movie poster. Tone: ${tone}. 
+              
+              Task 1: Write a spoof Title mocking the original movie.
+              Task 2: Write a hilarious Tagline.
+              Task 3: Write a full "billing block" of production credits. Include fake studios, producers, and directors, but make them funny and related to the user ${userName} or the movie theme. Format it as a single long string, like: "PARAMOUNT PICTURES PRESENTS A HOWARD W. KOCH PRODUCTION... STARRING ${userName.toUpperCase()}..."
+              Task 4: Write a highly detailed image generation prompt. The prompt MUST describe a new, original image that perfectly mimics the exact lighting, background, and cinematic style of Image 1, but features a caricature of the person in Image 2 as the main character. The prompt MUST explicitly instruct the image generator to leave a solid color margin at the bottom of the poster to act as a background for the billing block credits. Do NOT include instructions to render text in this prompt. We will add the text later.
+              `
+            }
+          ]
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              tagline: { type: Type.STRING },
+              credits: { type: Type.STRING },
+              visual_prompt: { type: Type.STRING }
+            },
+            required: ["title", "tagline", "credits", "visual_prompt"]
+          }
+        }
+      });
+
+      const jsonStr = this.cleanJson(response.text || "{}");
+      const blueprint = JSON.parse(jsonStr) as PosterBlueprint;
+      
+      console.log("Blueprint Generated:", blueprint);
+      return blueprint;
+
+    } catch (error) {
+      console.error("Failed to generate blueprint:", error);
+      throw new Error("Blueprint generation failed.");
+    }
   }
 
   private blobToBase64(blob: Blob): Promise<string> {
@@ -152,20 +210,15 @@ export class MemeGeneratorService {
 
   private async fetchImageAsBase64(url: string): Promise<string> {
     try {
-        // 1. Try direct fetch (works for blob: URLs and CORS-enabled servers)
         const response = await fetch(url, { mode: 'cors', credentials: 'omit' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
         return await this.blobToBase64(blob);
     } catch (e) {
         console.warn(`Direct fetch failed for ${url}, attempting CORS proxy fallback...`, e);
-        
-        // 2. Fallback: Use a public CORS proxy for demo purposes (fixes "Could not download template")
-        // Only works for http/https URLs, not blob:
         if (url.startsWith('http')) {
             try {
-                // Using corsproxy.io as a reliable public proxy for demos
-                const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
                 const response = await fetch(proxyUrl, { mode: 'cors' });
                 if (!response.ok) throw new Error(`Proxy HTTP ${response.status}`);
                 const blob = await response.blob();
@@ -225,7 +278,7 @@ export class MemeGeneratorService {
     try {
       const styleGuide = TONE_PROMPTS[tone] || TONE_PROMPTS['Funny'];
       const response = await this.ai.models.generateContent({
-        model: 'gemini-3-flash-preview', 
+        model: 'gemini-3.1-pro-preview', 
         contents: `You are a Hollywood marketing genius.
         TASK: Write movie poster copy for a movie based on the template: "${templateName}".
         TONE: ${tone}
@@ -262,249 +315,121 @@ export class MemeGeneratorService {
 
   // --- CORE PIPELINE ---
 
-  async generateAIImageOnly(
-      userPhotoBase64: string,
-      templateUrl: string,
-      costume: string,
-      strategy: GenerationStrategy = 'cinematic',
-      logger?: (msg: string) => void
-  ): Promise<string> {
-      const log = (msg: string) => {
-          console.log(`[Gemini] ${msg}`);
-          if (logger) logger(msg);
-      };
-
-      log(`Strategy: ${strategy}`);
-      
-      // 1. Optimize Inputs
-      log("Preparing inputs...");
-      const optimizedUserPhoto = await this.resizeImage(userPhotoBase64, 1024);
-      
-      let templateBase64 = templateUrl;
-      if (templateUrl.startsWith('http') || templateUrl.startsWith('blob')) {
-            try {
-                templateBase64 = await this.fetchImageAsBase64(templateUrl);
-            } catch (e) {
-                log(`Failed download: ${(e as Error).message}`);
-                throw new Error("Could not download template image.");
-            }
-      }
-      // Low res for analysis is fine and faster
-      const optimizedTemplate = await this.resizeImage(templateBase64, 512);
-
-      const userParts = this.getBase64Details(optimizedUserPhoto);
-      const templateParts = this.getBase64Details(optimizedTemplate);
-
-      // 2. ANALYZE USER FACE (Identity Lock)
-      // We explicitly ask the model to describe the user first, so it has "tokens" for their face in context.
-      log("Analyzing ID...");
-      let userDescription = "";
-      try {
-        const userAnalysis = await this.ai.models.generateContent({
-             model: 'gemini-2.5-flash',
-             contents: { parts: [
-                 { inlineData: { data: userParts.data, mimeType: userParts.mimeType }},
-                 { text: "Describe this person's face in detail (eye color, hair style/color, facial hair, skin tone, facial structure). Start with 'A person with...'" }
-             ]}
-          });
-        userDescription = userAnalysis.text || "a person";
-        // log(`ID: ${userDescription}`);
-      } catch (e) {
-          userDescription = "the person in the reference image";
-      }
-
-      // 3. ANALYZE TEMPLATE (Style Extraction)
-      // Strictly forbidden to name actors to prevent hallucination.
-      log("Extracting style...");
-      let templateDescription = "";
-      try {
-        const analysisResp = await this.ai.models.generateContent({
-             model: 'gemini-2.5-flash',
-             contents: { parts: [
-                 { inlineData: { data: templateParts.data, mimeType: templateParts.mimeType }},
-                 { text: `Describe the VISUAL STYLE and BACKGROUND of this poster.
-                   Focus on: Lighting, Color Palette, Camera Angle, Background Elements.
-                   
-                   CRITICAL: 
-                   - DO NOT mention the main character's face.
-                   - DO NOT mention the movie title.` 
-                 }
-             ]}
-          });
-        templateDescription = analysisResp.text || `A cinematic poster with ${costume}`;
-      } catch (e) {
-          templateDescription = `A high quality cinematic movie poster. Dramatic lighting.`;
-      }
-
-      // 4. GENERATE NEW IMAGE (Double-Blind Synthesis with Fallback)
-      // We do NOT pass the template image to the generator. Only the user image and the generic description.
-      log("Synthesizing...");
-      
-      const isParody = strategy === 'parody';
-
-      const prompt = `
-        TASK: Create a movie poster featuring the person from the Reference Image.
-
-        1. THE SUBJECT (Reference Image 1):
-           - You MUST use the face and likeness of the person in Reference Image 1.
-           - User Description: ${userDescription}
-           - They are cosplaying as a character wearing: ${costume}
-           ${isParody ? '- CRITICAL: DO NOT hide the face. REMOVE sunglasses, masks, visors, or helmets. The face must be clearly visible and expressive.' : ''}
-           
-        2. THE STYLE:
-           - Background/Vibe: ${templateDescription}
-        
-        INSTRUCTIONS:
-        - GENERATE A NEW IMAGE of the person in the Reference Image.
-        - Ensure the FACE matches the Reference Image exactly.
-        - The lighting should be cinematic and dramatic.
-        - ${isParody 
-            ? 'STYLE: PARODY / COMEDY. The character should look like they are in a "knock-off" or "bootleg" version of the movie. Make it funny. Use a slightly exaggerated expression if it fits the face.' 
-            : 'Style: Epic, serious, and photorealistic (8k resolution).'}
-        
-        NEGATIVE PROMPT:
-        - Do not use the original movie actor's face.
-        - Do not generate text/titles.
-        ${isParody ? '- No sunglasses. No masks. No face covering. No hiding face.' : ''}
-      `;
-      
-      const parts = [
-          { inlineData: { data: userParts.data, mimeType: userParts.mimeType } },
-          { text: prompt }
-      ];
-
-      // Config for loose safety to allow "Action" content
-      const config = {
-          safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
-          ]
-      };
-
-      // Try High-Quality Model First
-      try {
-        log("Attempting High-Res Gen...");
-        const response = await this.ai.models.generateContent({
-            model: 'gemini-3-pro-image-preview',
-            contents: { parts },
-            config: config
-        });
-        
-        const img = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (img) return `data:image/png;base64,${img}`;
-        
-        throw new Error("Empty response from Pro model");
-      } catch (e: any) {
-          log(`Pro Model Failed (${e.message}). Falling back to Flash...`);
-          
-          // Fallback to Flash-Image (More permissive, less strict on billing)
-          try {
-            const response = await this.ai.models.generateContent({
-                model: 'gemini-2.5-flash-image',
-                contents: { parts },
-                config: config
-            });
-            const img = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (img) return `data:image/png;base64,${img}`;
-          } catch (e2: any) {
-             throw new Error(`Generation Failed completely: ${e2.message}`);
-          }
-          throw new Error("No image returned from backup model");
-      }
-  }
-
-  // STEP 2: The Fast Text Overlay (Runs on demand)
-  async applyTextOverlay(
-      baseImageBase64: string,
-      userName: string,
-      movieTitle: string,
-      slogan: string,
-      credits: string
-  ): Promise<string> {
-      return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = () => {
-              const canvas = document.createElement('canvas');
-              canvas.width = 1200;
-              canvas.height = 1800;
-              const ctx = canvas.getContext('2d');
-              if (!ctx) return resolve(baseImageBase64);
-
-              // 1. Draw Background
-              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-              // 2. Draw Gradient Overlay
-              const gradient = ctx.createLinearGradient(0, canvas.height * 0.5, 0, canvas.height);
-              gradient.addColorStop(0, "transparent");
-              gradient.addColorStop(0.7, "rgba(0,0,0,0.8)");
-              gradient.addColorStop(1, "black");
-              ctx.fillStyle = gradient;
-              ctx.fillRect(0, canvas.height / 2, canvas.width, canvas.height / 2);
-
-              // 3. Draw Movie Title
-              ctx.textAlign = 'center';
-              ctx.shadowColor = "rgba(0,0,0,0.8)";
-              ctx.shadowBlur = 20;
-              let titleSize = 130;
-              if (movieTitle.length > 15) titleSize = 100;
-              if (movieTitle.length > 25) titleSize = 80;
-              
-              ctx.font = `900 ${titleSize}px 'Oswald', sans-serif`;
-              ctx.fillStyle = '#FFD700';
-              ctx.fillText(movieTitle.toUpperCase(), canvas.width / 2, canvas.height - 300);
-
-              // 4. Draw Actor Name
-              ctx.font = "bold 60px 'Oswald', sans-serif";
-              ctx.fillStyle = "white";
-              ctx.fillText(userName.toUpperCase(), canvas.width / 2, 100);
-
-              // 5. Draw Tagline
-              ctx.font = "italic 40px 'Inter', sans-serif";
-              ctx.fillStyle = "#cccccc";
-              ctx.fillText(slogan, canvas.width / 2, canvas.height - 450);
-
-              // 6. Draw Credits
-              ctx.font = "20px 'Inter', sans-serif";
-              ctx.fillStyle = "#666666";
-              ctx.fillText(credits.toUpperCase(), canvas.width / 2, canvas.height - 100);
-
-              resolve(canvas.toDataURL('image/png'));
-          };
-          img.src = baseImageBase64;
+  async urlToBase64(url: string): Promise<string> {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64data = reader.result as string;
+          resolve(base64data);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
       });
+    } catch (error) {
+      console.error("Failed to convert URL to Base64:", error);
+      throw new Error("Could not process template image.");
+    }
   }
 
-  // Orchestrator
-  async generateMeme(
-    userPhotoBase64: string, 
-    templateId: string, 
-    templateUrl: string, 
-    userName: string, 
-    movieTitle: string, 
-    costume: string, 
-    tagline: string, 
-    coverText: string, 
-    tone: string,
-    preGeneratedPosterBase64?: string
-  ): Promise<string> {
-      
-      let basePoster = preGeneratedPosterBase64;
+  async prepareBlueprint(
+    userPhotoBase64: string,
+    templateUrl: string,
+    userName: string,
+    tone: MemeTone,
+    onProgress?: (step: string) => void
+  ): Promise<PosterBlueprint> {
+    const log = (msg: string) => {
+      console.log(`[Gemini Pipeline] ${msg}`);
+      if (onProgress) onProgress(msg);
+    };
 
-      // If no pre-generation, do it now (blocking) with default strategy
-      if (!basePoster) {
-          basePoster = await this.generateAIImageOnly(userPhotoBase64, templateUrl, costume, 'cinematic');
+    // 1. PREPARE INPUTS
+    log("Analyzing Face...");
+    const optimizedUserPhoto = await this.resizeImage(userPhotoBase64, 1024);
+    
+    let templateBase64 = templateUrl;
+    if (templateUrl.startsWith('http') || templateUrl.startsWith('blob')) {
+      try {
+        templateBase64 = await this.urlToBase64(templateUrl);
+      } catch (e) {
+        throw new Error("Could not download template image.");
       }
+    }
+    const optimizedTemplate = await this.resizeImage(templateBase64, 1024);
 
-      const credits = `DIRECTED BY GEMINI   PRODUCED BY ${userName.toUpperCase()}`;
-      return await this.applyTextOverlay(
-          basePoster, 
-          userName, 
-          movieTitle, 
-          tagline, 
-          credits
-      );
+    // 2. STEP 1: THE BLUEPRINT
+    log("Writing Script...");
+    const blueprint = await this.generatePosterBlueprint(
+      optimizedTemplate,
+      optimizedUserPhoto,
+      userName,
+      tone
+    );
+
+    return blueprint;
+  }
+
+  async executePosterBlueprint(
+    blueprint: PosterBlueprint,
+    onProgress?: (step: string) => void
+  ): Promise<string> {
+    const log = (msg: string) => {
+      console.log(`[Gemini Pipeline] ${msg}`);
+      if (onProgress) onProgress(msg);
+    };
+
+    log("Painting Poster...");
+    
+    const finalPrompt = `${blueprint.visual_prompt}\n\nCRITICAL INSTRUCTION: You MUST render the following text on the image in cinematic typography. \nTitle: "${blueprint.title}" (Make this the LARGEST and most prominent text on the poster, centered, taking up significant space).\nTagline: "${blueprint.tagline}" (Place this above or below the title).\nCredits: "${blueprint.credits}" (Create a solid color rectangular margin at the very bottom of the poster. Inside this margin, place the credits as a block of text that spans the entire width from left to right, resembling a classic movie poster billing block. Use a small, condensed, tall font).`;
+
+    const executionResponse = await this.ai.models.generateImages({
+      model: 'imagen-4.0-generate-001',
+      prompt: finalPrompt,
+      config: {
+        numberOfImages: 1,
+        aspectRatio: '3:4',
+        outputMimeType: 'image/jpeg',
+        personGeneration: PersonGeneration.ALLOW_ALL
+      }
+    });
+
+    const finalImageBase64 = executionResponse.generatedImages?.[0]?.image?.imageBytes;
+    
+    if (!finalImageBase64) {
+      throw new Error("Imagen 4 failed to return image bytes.");
+    }
+
+    return `data:image/jpeg;base64,${finalImageBase64}`;
+  }
+
+  async regenerateText(
+    type: 'title' | 'tagline' | 'credits',
+    templateTitle: string,
+    userName: string,
+    tone: MemeTone,
+    currentTitle?: string
+  ): Promise<string> {
+    const prompt = `You are a Hollywood marketing genius.
+    TASK: Write a new, hilarious ${type} for a spoof movie poster based on "${templateTitle}" starring ${userName}.
+    TONE: ${tone}.
+    ${type === 'tagline' && currentTitle ? `The movie title is "${currentTitle}".` : ''}
+    ${type === 'credits' ? `Write a full "billing block" of production credits. Include fake studios, producers, and directors, but make them funny and related to the user ${userName} or the movie theme. Format it as a single long string, like: "PARAMOUNT PICTURES PRESENTS A HOWARD W. KOCH PRODUCTION... STARRING ${userName.toUpperCase()}..."` : ''}
+    
+    Return ONLY the generated text, nothing else. Do not include quotes around the text unless they are part of the tagline.`;
+
+    const response = await this.ai.models.generateContent({
+      model: 'gemini-3.1-pro-preview',
+      contents: prompt,
+    });
+
+    let text = response.text?.trim() || '';
+    if (text.startsWith('"') && text.endsWith('"')) {
+        text = text.substring(1, text.length - 1);
+    }
+    return text;
   }
 
   async validatePhoto(photoBase64: string): Promise<{ valid: boolean; message: string }> {
